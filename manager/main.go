@@ -1495,7 +1495,7 @@ func removeMACsFromPool(poolFile string) error {
 	return nil
 }
 
-// listMACsInPool выводит список MAC-адресов в пуле
+// listMACsInPool выводит список MAC-адресов в пуле с интуитивной навигацией
 func listMACsInPool(poolFile string) error {
 	// Загрузка существующего пула
 	pool, _, err := loadAndDecryptPool(poolFile)
@@ -1506,72 +1506,65 @@ func listMACsInPool(poolFile string) error {
 
 	if len(pool.Addresses) == 0 {
 		fmt.Println(colorYellow + "Pool is empty." + colorReset)
+		fmt.Println("\nPress ENTER to return...")
+		bufio.NewReader(os.Stdin).ReadString('\n')
 		return nil
 	}
 
-	// Предложить варианты отображения
-	fmt.Println("\nHow would you like to view MAC addresses?")
-	fmt.Println("1. View all MAC addresses")
-	fmt.Println("2. View only unused MAC addresses")
-	fmt.Println("3. View only used MAC addresses")
-	fmt.Println("0. Cancel")
+	clearScreen()
+	showHeader()
 
-	var choice string
-	fmt.Print("\nSelect option: ")
-	fmt.Scanln(&choice)
+	// Предложить варианты отображения
+	fmt.Println(colorCyan + "MAC Address Pool View Options" + colorReset)
+	fmt.Println("\nSelect which MAC addresses to display:")
+	fmt.Println(colorGreen + "1" + colorReset + " - All MAC addresses")
+	fmt.Println(colorGreen + "2" + colorReset + " - Only unused MAC addresses")
+	fmt.Println(colorGreen + "3" + colorReset + " - Only used MAC addresses")
+	fmt.Println(colorGreen + "0" + colorReset + " - Return to main menu")
+
+	reader := bufio.NewReader(os.Stdin)
+	fmt.Print("\nYour choice: ")
+	choice, _ := reader.ReadString('\n')
+	choice = strings.TrimSpace(choice)
 
 	var filteredAddresses []MACAddress
+	var viewMode string
 
 	switch choice {
 	case "0":
 		return nil
 	case "1":
 		filteredAddresses = pool.Addresses
+		viewMode = "All MAC addresses"
 	case "2":
 		for _, addr := range pool.Addresses {
 			if !addr.Used {
 				filteredAddresses = append(filteredAddresses, addr)
 			}
 		}
+		viewMode = "Unused MAC addresses"
 	case "3":
 		for _, addr := range pool.Addresses {
 			if addr.Used {
 				filteredAddresses = append(filteredAddresses, addr)
 			}
 		}
+		viewMode = "Used MAC addresses"
 	default:
 		fmt.Println(colorRed + "Invalid option." + colorReset)
-		return errors.New("invalid option")
+		time.Sleep(1 * time.Second)
+		return listMACsInPool(poolFile) // Рекурсивный вызов для повторного выбора
 	}
 
-	// Отображение MAC-адресов
-	fmt.Println("\nMAC addresses in pool:")
+	// Проверка, найдены ли адреса
 	if len(filteredAddresses) == 0 {
-		fmt.Println(colorYellow + "No MAC addresses matching the selected filter." + colorReset)
+		fmt.Println(colorYellow + "\nNo MAC addresses matching the selected filter." + colorReset)
+		fmt.Println("\nPress ENTER to return...")
+		reader.ReadString('\n')
 		return nil
 	}
 
-	for i, addr := range filteredAddresses {
-		status := "Unused"
-		if addr.Used {
-			status = fmt.Sprintf("Used at %s", addr.UsedAt.Format("2006-01-02 15:04:05"))
-			if addr.UsedBy != "" {
-				status += fmt.Sprintf(" by %s", addr.UsedBy)
-			}
-		}
-		if addr.Reserved {
-			status += " (Reserved)"
-		}
-
-		comment := ""
-		if addr.Comment != "" {
-			comment = " - " + addr.Comment
-		}
-
-		fmt.Printf("%d. %s - %s%s\n", i+1, addr.Address, status, comment)
-	}
-
-	// Статистика
+	// Подготовка статистики
 	unusedCount := 0
 	usedCount := 0
 	reservedCount := 0
@@ -1586,16 +1579,186 @@ func listMACsInPool(poolFile string) error {
 		}
 	}
 
-	fmt.Printf("\nSummary: %d total MAC addresses, %d used, %d unused, %d reserved\n",
-		len(pool.Addresses), usedCount, unusedCount, reservedCount)
-	fmt.Printf("Last updated: %s\n", pool.LastUpdated.Format("2006-01-02 15:04:05"))
-	fmt.Printf("Created by: %s\n", pool.CreatedBy)
+	// Реализация постраничного просмотра с улучшенной навигацией
+	const itemsPerPage = 15 // Уменьшаем количество на странице для лучшей читаемости
+	totalItems := len(filteredAddresses)
+	totalPages := (totalItems + itemsPerPage - 1) / itemsPerPage
+	currentPage := 1
 
-	if pool.MACVendorPrefix != "" {
-		fmt.Printf("Vendor prefix: %s\n", pool.MACVendorPrefix)
+	// Основной цикл просмотра
+	for {
+		clearScreen()
+		showHeader()
+
+		// Верхняя информационная панель
+		fmt.Printf(colorCyan + "╔══════════════════════════════════════════════════════════════════════════╗\n" + colorReset)
+		fmt.Printf(colorCyan+"║ "+colorReset+"%-72s"+colorCyan+" ║\n"+colorReset, "POOL: "+filepath.Base(poolFile))
+		fmt.Printf(colorCyan+"║ "+colorReset+"%-72s"+colorCyan+" ║\n"+colorReset, "VIEW: "+viewMode)
+		fmt.Printf(colorCyan + "╚══════════════════════════════════════════════════════════════════════════╝\n" + colorReset)
+
+		// Индексы начала и конца для текущей страницы
+		startIdx := (currentPage - 1) * itemsPerPage
+		endIdx := startIdx + itemsPerPage
+		if endIdx > totalItems {
+			endIdx = totalItems
+		}
+
+		// Показать мини-статистику и информацию о пагинации
+		progressBar := createProgressBar(currentPage, totalPages, 40)
+		fmt.Printf("\n%s Page %d of %d (%d-%d of %d entries) %s\n\n",
+			colorBlue, currentPage, totalPages, startIdx+1, endIdx, totalItems, colorReset)
+		fmt.Println(progressBar)
+		fmt.Println()
+
+		// Показать заголовок таблицы
+		fmt.Printf("%-3s %-17s %-40s %s\n", "#", "MAC Address", "Status", "Comment")
+		fmt.Println(strings.Repeat("─", 80))
+
+		// Показать адреса для текущей страницы
+		for i := startIdx; i < endIdx; i++ {
+			addr := filteredAddresses[i]
+
+			// Определяем цвет и статус в зависимости от состояния
+			statusColor := colorReset
+			status := "Unused"
+
+			if addr.Used {
+				statusColor = colorGreen
+				status = "Used"
+				if addr.UsedAt.Year() > 1 { // Проверка валидной даты
+					status = "Used on " + addr.UsedAt.Format("2006-01-02")
+				}
+			} else if addr.Reserved {
+				statusColor = colorYellow
+				status = "Reserved"
+			}
+
+			// Если нужны дополнительные детали и они есть
+			details := ""
+			if addr.Used && addr.UsedBy != "" {
+				details = " by " + addr.UsedBy
+				// Если строка слишком длинная - обрезаем
+				if len(details) > 30 {
+					details = details[:27] + "..."
+				}
+			}
+
+			comment := ""
+			if addr.Comment != "" {
+				comment = addr.Comment
+				// Если комментарий слишком длинный - обрезаем
+				if len(comment) > 15 {
+					comment = comment[:12] + "..."
+				}
+			}
+
+			// Определяем номер строки
+			rowNum := fmt.Sprintf("%d.", i+1)
+
+			// Выводим строку с MAC-адресом
+			fmt.Printf("%3s %s%-17s%s %-40s %s\n",
+				rowNum,
+				statusColor, addr.Address, colorReset,
+				status+details,
+				comment)
+		}
+
+		// Нижняя информационная панель со статистикой
+		fmt.Println()
+		fmt.Printf("Total: %d MACs | ", len(pool.Addresses))
+		fmt.Printf("Used: %s%d%s | ", colorGreen, usedCount, colorReset)
+		fmt.Printf("Unused: %d | ", unusedCount)
+		fmt.Printf("Reserved: %s%d%s\n", colorYellow, reservedCount, colorReset)
+
+		if pool.MACVendorPrefix != "" {
+			fmt.Printf("Vendor prefix: %s\n", pool.MACVendorPrefix)
+		}
+
+		// Навигационная подсказка
+		fmt.Println(colorCyan + "\n╔══════════════════════════════════════════════════════════════════════════╗" + colorReset)
+		fmt.Println(colorCyan + "║ " + colorReset + "Navigation:                                                             " + colorCyan + "║" + colorReset)
+
+		navLine := "║ "
+		if currentPage > 1 {
+			navLine += colorGreen + "←/P" + colorReset + "-Prev  "
+		} else {
+			navLine += "       "
+		}
+
+		if currentPage < totalPages {
+			navLine += colorGreen + "→/N" + colorReset + "-Next  "
+		} else {
+			navLine += "       "
+		}
+
+		navLine += colorGreen + "Home/F" + colorReset + "-First  " +
+			colorGreen + "End/L" + colorReset + "-Last  " +
+			colorGreen + "G" + colorReset + "-Goto  " +
+			colorGreen + "Q" + colorReset + "-Return to Menu" +
+			strings.Repeat(" ", 14) + "║"
+
+		fmt.Println(colorCyan + navLine + colorReset)
+		fmt.Println(colorCyan + "╚══════════════════════════════════════════════════════════════════════════╝" + colorReset)
+
+		// Получение выбора пользователя - делаем ввод максимально гибким
+		fmt.Print("Command: ")
+		input, _ := reader.ReadString('\n')
+		input = strings.TrimSpace(strings.ToUpper(input))
+
+		// Обработка различных вариантов навигации
+		switch input {
+		case "P", "PREV", "PREVIOUS", "\033[D": // \033[D это код стрелки влево
+			if currentPage > 1 {
+				currentPage--
+			}
+		case "N", "NEXT", "\033[C": // \033[C это код стрелки вправо
+			if currentPage < totalPages {
+				currentPage++
+			}
+		case "F", "FIRST", "HOME", "\033[H": // \033[H это код клавиши Home
+			currentPage = 1
+		case "L", "LAST", "END", "\033[F": // \033[F это код клавиши End
+			currentPage = totalPages
+		case "G", "GOTO":
+			fmt.Printf("Enter page number (1-%d): ", totalPages)
+			pageInput, _ := reader.ReadString('\n')
+			pageInput = strings.TrimSpace(pageInput)
+			pageNum, err := strconv.Atoi(pageInput)
+			if err == nil && pageNum >= 1 && pageNum <= totalPages {
+				currentPage = pageNum
+			} else {
+				fmt.Printf(colorYellow+"Invalid page number. Please enter a number between 1 and %d."+colorReset+"\n", totalPages)
+				time.Sleep(1 * time.Second)
+			}
+		case "Q", "QUIT", "ESC", "\033", "EXIT", "BACK":
+			return nil
+		default:
+			// Проверка, является ли ввод числом (прямой переход на страницу)
+			if pageNum, err := strconv.Atoi(input); err == nil && pageNum >= 1 && pageNum <= totalPages {
+				currentPage = pageNum
+			} else {
+				// Если введено что-то другое, просто игнорируем
+			}
+		}
+	}
+}
+
+// createProgressBar создает визуальный индикатор прогресса для пагинации
+func createProgressBar(current, total, width int) string {
+	if total <= 1 {
+		return strings.Repeat("█", width)
 	}
 
-	return nil
+	position := width * (current - 1) / (total - 1)
+	if position >= width {
+		position = width - 1
+	}
+
+	bar := strings.Repeat("─", width)
+	runes := []rune(bar)
+	runes[position] = '█'
+
+	return colorBlue + string(runes) + colorReset
 }
 
 // resetMACStatus сбрасывает статус MAC-адреса (помечает как неиспользуемый)
